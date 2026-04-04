@@ -2,13 +2,14 @@
 
 Curated Hugging Face model browser + installer for ComfyUI.
 
-This extension adds a popup UI (opened from the ComfyUI sidebar) where you can browse official/popular models, filter them, select multiple files, and download directly into the correct Comfy model folders.
+This extension adds a popup UI with a persistent floating launcher in the ComfyUI shell, so you can browse official/popular models, filter them, select multiple files, and download directly into the correct Comfy model folders.
 
 ![HF Model Downloader Main Window](docs/main-window.png)
 
 ## What It Adds
 
-- Sidebar launch button: `HF Models` (with floating fallback button if menu injection fails)
+- Persistent floating launcher: `Model Browser`
+- Sidebar launch button: `HF Models`
 - Curated multi-owner index (default owners include Comfy-Org, Kijai, black-forest-labs, Tencent-Hunyuan, Qwen, lllyasviel)
 - Tabbed browsing by Comfy model category
 - Search + filters (family/type, owner, strict filtering toggle)
@@ -23,18 +24,21 @@ This extension adds a popup UI (opened from the ComfyUI sidebar) where you can b
 - ComfyUI running locally
 - `aria2c` installed and available in `PATH`
 - Python environment used by ComfyUI
+- Python dependencies from [`requirements.txt`](requirements.txt)
 
 ## Install
 
 1. Place this folder in:
    - `ComfyUI/custom_nodes/ComfyUI_HF_ModelDownloader`
-2. Restart ComfyUI.
-3. Hard refresh browser (`Ctrl+Shift+R`).
-4. Open `HF Models` from the ComfyUI sidebar.
+2. Install Python requirements inside the same environment that runs ComfyUI:
+   - `python -m pip install -r requirements.txt`
+3. Restart ComfyUI.
+4. Hard refresh browser (`Ctrl+Shift+R`).
+5. Open `Model Browser` from the floating launcher or `HF Models` from the ComfyUI sidebar.
 
 ## Quick Start
 
-1. Open `HF Models`.
+1. Open `Model Browser`.
 2. Click `Refresh Index` (optional, to pull latest curated list).
 3. Pick a category tab (for example `diffusion_models`, `loras`, `vae`).
 4. Filter by search / family / owner as needed.
@@ -88,11 +92,27 @@ All routes are served by this extension:
 - `GET /hf-model-downloader/settings`
 - `POST /hf-model-downloader/token`
 
+## Development
+
+- Backend runtime dependency: `aiohttp`
+- ComfyUI-provided modules: `folder_paths`, `server.PromptServer`
+- Frontend assets live in `./web`
+- Syntax smoke test:
+  - `python -m py_compile __init__.py server.py`
+
+## Repository Standards
+
+- Issues: use the GitHub issue forms for bug reports and feature requests
+- Pull requests: follow the checklist in [`.github/pull_request_template.md`](.github/pull_request_template.md)
+- Contributions: see [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Security reporting: see [`SECURITY.md`](SECURITY.md)
+- Community expectations: see [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+
 ## Troubleshooting
 
 - No sidebar button:
   - hard refresh browser
-  - check floating `HF` button fallback
+  - use the persistent floating `Model Browser` launcher
 - Gated repo download fails with auth error:
   - open `Settings` and save a valid HF token
 - Download fails immediately:
@@ -104,3 +124,4 @@ All routes are served by this extension:
 
 - This extension is UI/API focused and does not register graph node classes.
 - Frontend assets are served from `./web`.
+- Cached index data is stored in `./.cache` and is intentionally gitignored.

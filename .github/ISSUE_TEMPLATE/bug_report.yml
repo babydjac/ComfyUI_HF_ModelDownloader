@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible problem with the downloader UI, index, or install flow.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+        Please include enough detail for someone else to reproduce it locally.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+      placeholder: Selecting a model starts the job, but the download never begins.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Share the exact clicks, filters, and model selection that trigger the issue.
+      placeholder: |
+        1. Open Model Browser
+        2. Search for ...
+        3. Click Download Selected
+        4. See error
+    validations:
+      required: true
+
+  - type: input
+    id: comfyui_version
+    attributes:
+      label: ComfyUI version
+      description: Branch, commit, or release if known.
+      placeholder: nightly / commit hash / desktop version
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, install method, and how ComfyUI is being run.
+      placeholder: macOS 15, Python 3.11, local ComfyUI install, launched from terminal
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Paste relevant console output or attach screenshots of the UI.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues first.
+          required: true
+        - label: I removed any tokens, secrets, or personal data from logs.
+          required: true

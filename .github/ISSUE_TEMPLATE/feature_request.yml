@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest an improvement to the model browser, filtering, or download workflow.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the current friction or limitation.
+      placeholder: It is hard to find a model when several owners publish similar filenames.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want to see.
+      placeholder: Add an owner filter preset and show the repo card before download.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention any workarounds or other approaches you already tried.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, examples, or related repos/issues.

@@ -1,0 +1,2 @@
+# Runtime dependency used by the extension backend for Hugging Face API requests.
+aiohttp>=3.9,<4.0

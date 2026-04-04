@@ -7,8 +7,9 @@ const BUTTON_ID = "hfmd-sidebar-button";
 const FLOATING_BUTTON_ID = "hfmd-floating-button";
 const OVERLAY_ID = "hfmd-overlay";
 const SIDEBAR_TAB_ID = "hf-model-downloader-sidebar-tab";
-const LAUNCH_SHORTCUT = "Ctrl/Cmd+Shift+M";
+const LAUNCH_SHORTCUT = "Ctrl/Cmd+Shift+B";
 const OWNER_SOURCES_STORAGE_KEY = "hfmd.owner_sources";
+const UI_REFRESH_AGE_MS = 5 * 60 * 1000;
 
 function readStoredValue(key) {
     try {
@@ -61,6 +62,7 @@ const state = {
     ui: null,
     domObserver: null,
     sidebarTabRegistered: false,
+    indexLoadedAtMs: 0,
 };
 
 function formatBytes(size) {
@@ -204,8 +206,8 @@ function ensureOverlay() {
     const modal = el("div", "hfmd-modal");
     const header = el("div", "hfmd-header");
     const titleWrap = el("div", "hfmd-title-wrap");
-    titleWrap.appendChild(el("h2", "hfmd-title", "HF Model Downloader"));
-    titleWrap.appendChild(el("p", "hfmd-subtitle", "Official/popular model browser with one-click install."));
+    titleWrap.appendChild(el("h2", "hfmd-title", "Velvet Studio Model Browser"));
+    titleWrap.appendChild(el("p", "hfmd-subtitle", "Warm artist's atelier for curated Hugging Face model discovery and install."));
 
     const headerActions = el("div", "hfmd-header-actions");
     const browseButton = el("button", "hfmd-btn hfmd-view-toggle hfmd-view-browse", "Browse");
@@ -427,7 +429,7 @@ function ensureOverlay() {
     downloadButton.addEventListener("click", () => startDownload());
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && overlay.style.display !== "none") closeModal();
-        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "m") {
+        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "b") {
             event.preventDefault();
             openModal();
         }
@@ -871,6 +873,7 @@ async function fetchIndex(refresh = false) {
             errors: payload.errors || [],
             installedCount: Number(payload.installed_count || 0),
         };
+        state.indexLoadedAtMs = Date.now();
         state.strictFilter = payload.strict_filter !== false;
         updateStrictToggleLabel();
         updateOwnerSourcesUi();
@@ -1178,6 +1181,9 @@ function openModal() {
         renderTabs();
         renderFilterControls();
         renderList();
+        if (Date.now() - Number(state.indexLoadedAtMs || 0) > UI_REFRESH_AGE_MS) {
+            fetchIndex(false);
+        }
     }
     if (state.view === "downloads") {
         startJobsPolling();
@@ -1209,27 +1215,27 @@ function createLaunchButton(className, compact = false) {
     button.setAttribute("aria-label", "Open Hugging Face Model Downloader");
     button.title = "Open Hugging Face Model Downloader";
     button.innerHTML = compact
-        ? `<span class="hfmd-launch-icon">⬇</span><span class="hfmd-launch-text">HF</span>`
+        ? `<span class="hfmd-launch-icon">⬇</span><span class="hfmd-launch-text">Model Browser</span>`
         : `<span class="hfmd-launch-icon">⬇</span><span class="hfmd-launch-text">HF Models</span>`;
     button.addEventListener("click", () => openModal());
     return button;
 }
 
 function applyFloatingFallbackStyles(button) {
-    button.style.position = "fixed";
-    button.style.right = "18px";
-    button.style.bottom = "18px";
-    button.style.zIndex = "2147483000";
-    button.style.border = "1px solid #2fa0b0";
-    button.style.background = "linear-gradient(145deg, #0f4f5f, #1c8092)";
-    button.style.color = "#f0feff";
-    button.style.borderRadius = "999px";
-    button.style.padding = "10px 13px";
-    button.style.fontWeight = "700";
-    button.style.display = "inline-flex";
-    button.style.alignItems = "center";
-    button.style.gap = "7px";
-    button.style.cursor = "pointer";
+    button.style.position = "";
+    button.style.right = "";
+    button.style.bottom = "";
+    button.style.zIndex = "";
+    button.style.border = "";
+    button.style.background = "";
+    button.style.color = "";
+    button.style.borderRadius = "";
+    button.style.padding = "";
+    button.style.fontWeight = "";
+    button.style.display = "";
+    button.style.alignItems = "";
+    button.style.gap = "";
+    button.style.cursor = "";
 }
 
 function ensureFloatingButton() {
@@ -1271,10 +1277,10 @@ function ensureSidebarTab() {
         render: (container) => {
             container.innerHTML = "";
             const wrap = el("div", "hfmd-sidebar-tab");
-            wrap.appendChild(el("h3", "hfmd-sidebar-tab-title", "HF Model Downloader"));
-            wrap.appendChild(el("p", "hfmd-sidebar-tab-text", "Curated official/popular models with install + progress tracking."));
+            wrap.appendChild(el("h3", "hfmd-sidebar-tab-title", "Velvet Studio"));
+            wrap.appendChild(el("p", "hfmd-sidebar-tab-text", "Curated Hugging Face browser with instant launcher and live install tracking."));
             const launch = createLaunchButton("hfmd-sidebar-tab-button", false);
-            launch.querySelector(".hfmd-launch-text").textContent = "Open Downloader";
+            launch.querySelector(".hfmd-launch-text").textContent = "Open Model Browser";
             wrap.appendChild(launch);
             wrap.appendChild(el("p", "hfmd-sidebar-tab-hint", `Shortcut: ${LAUNCH_SHORTCUT}`));
             container.appendChild(wrap);
