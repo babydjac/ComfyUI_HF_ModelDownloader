@@ -31,7 +31,7 @@ THIS_DIR = Path(__file__).resolve().parent
 CACHE_DIR = THIS_DIR / ".cache"
 CACHE_PATH = CACHE_DIR / "index.json"
 CACHE_MAX_AGE_SECONDS = 6 * 60 * 60
-CACHE_SCHEMA_VERSION = 3
+CACHE_SCHEMA_VERSION = 4
 
 DEFAULT_OWNERS = [
     "Comfy-Org",
@@ -95,7 +95,6 @@ ALIASES = {
     "black-forest-labs": "black-forest-labs",
     "qwen": "Qwen",
     "tencent-hunyuan": "Tencent-Hunyuan",
-    "contorlnet": "controlnet",
 }
 
 CATEGORY_ORDER = [
@@ -183,6 +182,38 @@ JOBS: Dict[str, Dict[str, object]] = {}
 JOBS_LOCK = threading.Lock()
 JOB_PROCESSES: Dict[str, subprocess.Popen] = {}
 INDEX_BUILD_LOCK = threading.Lock()
+MAX_STORED_JOBS = 120
+TERMINAL_JOB_STATUSES = frozenset({"done", "error", "cancelled"})
+
+
+def _repo_tree_revision(repo: Dict[str, object]) -> str:
+    sha = repo.get("sha")
+    if isinstance(sha, str):
+        cleaned = sha.strip()
+        if len(cleaned) >= 7:
+            return cleaned
+    return "main"
+
+
+def _prune_finished_jobs() -> None:
+    with JOBS_LOCK:
+        if len(JOBS) <= MAX_STORED_JOBS:
+            return
+        finished: List[Tuple[str, int]] = []
+        for jid, job in JOBS.items():
+            status = str(job.get("status", "")).lower()
+            if status in TERMINAL_JOB_STATUSES:
+                finished.append((jid, int(job.get("created_at", 0) or 0)))
+        finished.sort(key=lambda pair: pair[1])
+        for jid, _ in finished:
+            if len(JOBS) <= MAX_STORED_JOBS:
+                break
+            job = JOBS.get(jid)
+            if job is None:
+                continue
+            if str(job.get("status", "")).lower() in TERMINAL_JOB_STATUSES:
+                JOBS.pop(jid, None)
+                JOB_PROCESSES.pop(jid, None)
 
 
 def normalize_owner(name: str) -> str:
@@ -412,9 +443,15 @@ async def fetch_top_repos(
     return repos
 
 
-async def fetch_repo_tree(session: aiohttp.ClientSession, repo_id: str) -> List[Dict[str, object]]:
+async def fetch_repo_tree(
+    session: aiohttp.ClientSession,
+    repo_id: str,
+    revision: str = "main",
+) -> List[Dict[str, object]]:
     quoted_repo = quote(repo_id, safe="/")
-    url = f"{HF_API}/models/{quoted_repo}/tree/main?recursive=1&expand=false"
+    rev = (revision or "main").strip() or "main"
+    quoted_rev = quote(rev, safe="")
+    url = f"{HF_API}/models/{quoted_repo}/tree/{quoted_rev}?recursive=1&expand=false"
     payload = await request_json(session, url, timeout=120)
     if not isinstance(payload, list):
         return []
@@ -591,9 +628,11 @@ async def build_index(owners: Sequence[str], limit_per_owner: int, strict_filter
         repo_tree_semaphore = asyncio.Semaphore(HF_MAX_REPO_TREE_CONCURRENCY)
 
         async def fetch_repo_tree_job(repo_id: str) -> Tuple[str, List[Dict[str, object]], Optional[str]]:
+            repo_meta = repos_by_id.get(repo_id, {})
+            revision = _repo_tree_revision(repo_meta)
             async with repo_tree_semaphore:
                 try:
-                    tree = await fetch_repo_tree(session, repo_id)
+                    tree = await fetch_repo_tree(session, repo_id, revision)
                 except Exception as exc:
                     return repo_id, [], str(exc)
             return repo_id, tree, None
@@ -608,6 +647,7 @@ async def build_index(owners: Sequence[str], limit_per_owner: int, strict_filter
             repo = repos_by_id.get(repo_id)
             if not repo:
                 continue
+            repo_revision = _repo_tree_revision(repo)
 
             for entry in tree:
                 if entry.get("type") != "file":
@@ -625,6 +665,7 @@ async def build_index(owners: Sequence[str], limit_per_owner: int, strict_filter
                 item = {
                     "id": f"{repo_id}:{path}",
                     "repo_id": repo_id,
+                    "repo_revision": repo_revision,
                     "owner": repo_id.split("/")[0],
                     "repo_name": repo_id.split("/")[1],
                     "path": path,
@@ -898,8 +939,10 @@ def build_destination(
 def download_url(item: Dict[str, object]) -> str:
     repo_id = str(item.get("repo_id", ""))
     path = str(item.get("path", ""))
+    revision = str(item.get("repo_revision", "main") or "main").strip() or "main"
+    quoted_rev = quote(revision, safe="")
     quoted_path = quote(path, safe="/")
-    return f"{HF_WEB}/{repo_id}/resolve/main/{quoted_path}?download=1"
+    return f"{HF_WEB}/{repo_id}/resolve/{quoted_rev}/{quoted_path}?download=1"
 
 
 async def validate_hf_token_async(token: str) -> Tuple[bool, str]:
@@ -929,6 +972,11 @@ async def validate_hf_token_async(token: str) -> Tuple[bool, str]:
 
 
 def validate_hf_token(token: str) -> Tuple[bool, str]:
+    """Validate HF token in a dedicated event loop.
+
+    Intended for background/worker threads. Do not call from code already
+    running on the ComfyUI aiohttp event loop (use ``validate_hf_token_async``).
+    """
     return asyncio.run(validate_hf_token_async(token))
 
 
@@ -1189,6 +1237,23 @@ def _snapshot_progress(items: Sequence[Dict[str, object]], targets: Sequence[str
     return downloaded_bytes, completed
 
 
+def _verify_download_file(item: Dict[str, object], target: str) -> Tuple[bool, Optional[str]]:
+    target_path = Path(target)
+    marker_path = Path(f"{target}.aria2")
+    if marker_path.exists():
+        return False, "aria2 control file still present (incomplete download)"
+    if not target_path.is_file():
+        return False, "file missing"
+    expected = _expected_size(item)
+    try:
+        actual = target_path.stat().st_size
+    except OSError as exc:
+        return False, f"stat failed: {exc}"
+    if expected is not None and actual != expected:
+        return False, f"size mismatch (expected {expected} bytes, got {actual})"
+    return True, None
+
+
 def _run_download_worker(
     job_id: str,
     items: List[Dict[str, object]],
@@ -1325,26 +1390,62 @@ def _run_download_worker(
                 raise RuntimeError("cancelled")
             raise RuntimeError(f"aria2 exited with code {process.returncode}")
 
-        downloaded_bytes, completed = _snapshot_progress(items, targets)
-        for entry in file_entries:
-            entry["status"] = "complete"
-            entry["progress"] = 100.0
-            total = _safe_int(entry.get("total_bytes"), 0)
-            if total > 0:
-                entry["downloaded_bytes"] = total
+        ok_count = 0
+        failures: List[str] = []
+        for item, target, entry in zip(items, targets, file_entries):
+            ok, verify_error = _verify_download_file(item, target)
+            if ok:
+                ok_count += 1
+                entry["status"] = "complete"
+                entry["progress"] = 100.0
+                expected = _expected_size(item)
+                row_total = expected if expected is not None else _safe_int(entry.get("total_bytes"), 0)
+                if row_total > 0:
+                    entry["total_bytes"] = row_total
+                    entry["downloaded_bytes"] = row_total
+            else:
+                entry["status"] = "error"
+                entry["error"] = (verify_error or "verification failed")[:300]
+                failures.append(str(entry.get("filename", Path(target).name)))
 
-        _set_job(
-            job_id,
-            status="done",
-            completed=max(completed, len(items)),
-            downloaded_bytes=max(downloaded_bytes, total_bytes),
-            total_bytes=total_bytes,
-            progress=100.0,
-            finished_at=int(time.time()),
-            message=f"Downloaded {len(items)} model(s).",
-            cancel_requested=False,
-            files=file_entries,
-        )
+        downloaded_bytes, completed = _snapshot_progress(items, targets)
+        completed = max(completed, ok_count)
+
+        if failures:
+            if total_bytes > 0:
+                progress = min(100.0, (downloaded_bytes / total_bytes) * 100.0)
+            else:
+                progress = min(100.0, (ok_count / max(1, len(items))) * 100.0)
+            _set_job(
+                job_id,
+                status="error",
+                completed=ok_count,
+                downloaded_bytes=downloaded_bytes,
+                total_bytes=total_bytes,
+                progress=progress,
+                finished_at=int(time.time()),
+                error=f"{len(failures)} file(s) failed verification.",
+                message=(
+                    f"Verified {ok_count}/{len(items)} file(s). Failures: {', '.join(failures[:5])}"
+                    + ("…" if len(failures) > 5 else "")
+                ),
+                cancel_requested=False,
+                files=file_entries,
+            )
+            _append_job_log(job_id, f"Verification failures: {len(failures)} file(s).")
+        else:
+            _set_job(
+                job_id,
+                status="done",
+                completed=max(completed, len(items)),
+                downloaded_bytes=max(downloaded_bytes, total_bytes),
+                total_bytes=total_bytes,
+                progress=100.0,
+                finished_at=int(time.time()),
+                message=f"Downloaded {len(items)} model(s).",
+                cancel_requested=False,
+                files=file_entries,
+            )
     except Exception as exc:
         downloaded_bytes = 0
         total_bytes = 0
@@ -1390,6 +1491,7 @@ def _run_download_worker(
         _append_job_log(job_id, f"Error: {exc}")
     finally:
         _pop_job_process(job_id)
+        _prune_finished_jobs()
         try:
             if "queue_file" in locals() and queue_file:
                 Path(queue_file).unlink(missing_ok=True)
@@ -1590,6 +1692,7 @@ async def hf_model_downloader_download(request: web.Request) -> web.Response:
         max_value=32,
     )
 
+    _prune_finished_jobs()
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
         JOBS[job_id] = {
