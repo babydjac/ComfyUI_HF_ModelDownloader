@@ -1,42 +1,58 @@
 # AGENTS.md
 
-## Cursor Cloud specific instructions
-
 This is a **ComfyUI extension** (not a standalone app). It requires ComfyUI as a host.
 
-### Project overview
+## Project overview
 
-- `server.py` — Python backend (~1,680 lines): API routes, HF index builder, aria2c download manager
+- `server.py` — Python backend (~1,700 lines): API routes, HF index builder, aria2c download manager
 - `__init__.py` — ComfyUI extension entrypoint
 - `web/` — Frontend JS/CSS assets served by ComfyUI
+- `tests/test_server.py` — Unit tests with ComfyUI shims (no GPU or ComfyUI process needed)
 
-### Running the extension
+## Prerequisites
 
-1. ComfyUI must be installed at `/home/ubuntu/ComfyUI` and the extension is symlinked at `custom_nodes/ComfyUI_HF_ModelDownloader → /workspace`.
-2. Start ComfyUI with: `cd /home/ubuntu/ComfyUI && python3 main.py --cpu --listen 0.0.0.0 --port 8188`
-3. The extension registers API routes under `/hf-model-downloader/*` and frontend assets from `./web`.
+- **Python 3.10+** (CI tests 3.10, 3.11, 3.12)
+- **ComfyUI** installed, with this extension placed or symlinked at `ComfyUI/custom_nodes/ComfyUI_HF_ModelDownloader`
+- **aria2c** — download engine used via JSON-RPC
+  - macOS: `brew install aria2`
+  - Linux: `sudo apt-get install -y aria2`
+  - Windows: download from https://aria2.github.io/ and add to PATH
+- **aiohttp** — `pip install -r requirements.txt` (inside the same venv as ComfyUI)
 
-### Lint / syntax check
+## Running the extension
 
-`python3 -m py_compile __init__.py server.py` (from `/workspace`). This is the only CI check (see `.github/workflows/ci.yml`).
+1. Ensure this folder is at `ComfyUI/custom_nodes/ComfyUI_HF_ModelDownloader` (clone, copy, or symlink).
+2. Install Python deps: `pip install -r requirements.txt`
+3. Start ComfyUI from its root: `python main.py --listen` (add `--cpu` if no GPU).
+4. The extension registers API routes under `/hf-model-downloader/*` and serves frontend assets from `./web`.
 
-### Testing
+## Lint / syntax check
 
-No automated test suite exists. CI only runs `py_compile`. Manual smoke testing is done by starting ComfyUI and exercising the UI/API.
+```
+python -m py_compile __init__.py server.py
+```
 
-### Key API endpoints for smoke testing
+Run from this extension's directory. This is the baseline CI check (see `.github/workflows/ci.yml`).
+
+## Testing
+
+Unit tests stub ComfyUI modules so they run without a ComfyUI process:
+
+```
+python -m unittest discover -s tests -q
+```
+
+CI runs both the syntax check and unit tests on Python 3.10, 3.11, and 3.12.
+
+## Key API endpoints for smoke testing
 
 - `GET /hf-model-downloader/settings` — token status
 - `GET /hf-model-downloader/index?strict_filter=true` — fetches curated model index from HF
 - `GET /hf-model-downloader/jobs` — download job status
 - `POST /hf-model-downloader/download` — start a download job
 
-### System dependency
+## Gotchas
 
-`aria2c` must be installed (`sudo apt-get install -y aria2`). The extension uses it for model downloads via JSON-RPC.
-
-### Gotchas
-
-- The extension imports `folder_paths` and `server.PromptServer` from ComfyUI — these are only available when running inside the ComfyUI process.
-- Running `python3 server.py` standalone will fail due to missing ComfyUI modules.
+- The extension imports `folder_paths` and `server.PromptServer` from ComfyUI — these are only available when running inside the ComfyUI process. Running `python server.py` standalone will fail.
 - The index is cached locally at `.cache/index.json` (gitignored) with a 6-hour TTL.
+- Downloads use SHA-based revision pinning from the HF API; if a repo has no usable SHA the extension falls back to `main`.
