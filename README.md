@@ -4,8 +4,6 @@ Curated Hugging Face model browser + installer for ComfyUI.
 
 This extension adds a popup UI with a persistent floating launcher in the ComfyUI shell, so you can browse official/popular models, filter them, select multiple files, and download directly into the correct Comfy model folders.
 
-![HF Model Downloader Main Window](docs/main-window.png)
-
 ## What It Adds
 
 - Persistent floating launcher: `Model Browser`
@@ -96,9 +94,12 @@ All routes are served by this extension:
 
 - Backend runtime dependency: `aiohttp`
 - ComfyUI-provided modules: `folder_paths`, `server.PromptServer`
+- Indexing and download URLs use each model’s latest commit SHA from the Hugging Face API when available (falls back to `main`), so non-`main` default branches stay consistent.
 - Frontend assets live in `./web`
 - Syntax smoke test:
   - `python -m py_compile __init__.py server.py`
+- Unit tests (no extra deps):
+  - `python -m unittest discover -s tests -q`
 
 ## Repository Standards
 

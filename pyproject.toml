@@ -1,8 +1,8 @@
 [project]
 name = "hf_modeldownloader"
-description = ""
+description = "Curated Hugging Face model browser and downloader for ComfyUI."
 version = "1.0.0"
-license = {file = "LICENSE"} 
+license = {file = "LICENSE"}
 # classifiers = [
 #     # For OS-independent nodes (works on all operating systems)
 #     "Operating System :: OS Independent",
@@ -20,7 +20,7 @@ license = {file = "LICENSE"}
 #     "Environment :: GPU :: Apple Metal",    # Apple Metal support
 # ]
 
-dependencies = ["# Runtime dependency used by the extension backend for Hugging Face API requests.", "aiohttp>=3.9,<4.0"]
+dependencies = ["aiohttp>=3.9,<4.0"]
 
 [project.urls]
 Repository = "https://github.com/babydjac/ComfyUI_HF_ModelDownloader"
@@ -34,4 +34,3 @@ DisplayName = "ComfyUI_HF_ModelDownloader"
 Icon = ""
 includes = [] 
 # "requires-comfyui" = ">=1.0.0"  # ComfyUI version compatibility
-

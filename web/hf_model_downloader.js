@@ -206,8 +206,10 @@ function ensureOverlay() {
     const modal = el("div", "hfmd-modal");
     const header = el("div", "hfmd-header");
     const titleWrap = el("div", "hfmd-title-wrap");
-    titleWrap.appendChild(el("h2", "hfmd-title", "Velvet Studio Model Browser"));
-    titleWrap.appendChild(el("p", "hfmd-subtitle", "Warm artist's atelier for curated Hugging Face model discovery and install."));
+    titleWrap.appendChild(el("h2", "hfmd-title", "HF Model Browser"));
+    titleWrap.appendChild(
+        el("p", "hfmd-subtitle", "Curated Hugging Face model discovery and install for ComfyUI."),
+    );
 
     const headerActions = el("div", "hfmd-header-actions");
     const browseButton = el("button", "hfmd-btn hfmd-view-toggle hfmd-view-browse", "Browse");
@@ -1277,8 +1279,10 @@ function ensureSidebarTab() {
         render: (container) => {
             container.innerHTML = "";
             const wrap = el("div", "hfmd-sidebar-tab");
-            wrap.appendChild(el("h3", "hfmd-sidebar-tab-title", "Velvet Studio"));
-            wrap.appendChild(el("p", "hfmd-sidebar-tab-text", "Curated Hugging Face browser with instant launcher and live install tracking."));
+            wrap.appendChild(el("h3", "hfmd-sidebar-tab-title", "HF Model Browser"));
+            wrap.appendChild(
+                el("p", "hfmd-sidebar-tab-text", "Curated Hugging Face browser with launcher and live install tracking."),
+            );
             const launch = createLaunchButton("hfmd-sidebar-tab-button", false);
             launch.querySelector(".hfmd-launch-text").textContent = "Open Model Browser";
             wrap.appendChild(launch);
