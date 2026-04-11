@@ -20,7 +20,7 @@ license = {file = "LICENSE"}
 #     "Environment :: GPU :: Apple Metal",    # Apple Metal support
 # ]
 
-dependencies = ["aiohttp>=3.9,<4.0"]
+dependencies = ["aiohttp>=3.13.5,<4.0"]
 
 [project.urls]
 Repository = "https://github.com/babydjac/ComfyUI_HF_ModelDownloader"
