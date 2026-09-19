@@ -1,7 +1,7 @@
 [project]
 name = "hf_modeldownloader"
 description = "Curated Hugging Face model browser and downloader for ComfyUI."
-version = "1.0.0"
+version = "2.0.0"
 license = {file = "LICENSE"}
 # classifiers = [
 #     # For OS-independent nodes (works on all operating systems)

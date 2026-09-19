@@ -40,6 +40,12 @@ DEFAULT_OWNERS = [
     "Tencent-Hunyuan",
     "Qwen",
     "lllyasviel",
+    # Upscalers. These publish plain ESRGAN .pth files with no ComfyUI tags and
+    # zero reported downloads, so they need the relaxed checks below to survive.
+    "uwg",
+    "Kim2091",
+    "gemasai",
+    "Phips",
 ]
 DEFAULT_LIMIT_PER_OWNER = 30
 STRICT_FILTER_DEFAULT = True
@@ -55,6 +61,29 @@ MODEL_EXTENSIONS = {
 
 MIN_REPO_DOWNLOADS = 500
 MIN_REPO_LIKES = 20
+
+# Tags that mark a super-resolution repo. The classic ESRGAN publishers carry
+# these instead of the ComfyUI/diffusers tags the main filter looks for.
+UPSCALER_TAGS = {"super-resolution", "upscalers", "image-to-image"}
+
+# Well known upscaler architectures and model families, plus the "4x-" style
+# scale prefix. Needed because a name like 4x-UltraSharp.pth contains neither
+# "upscale" nor "esrgan" and would otherwise be filed as a checkpoint.
+UPSCALER_NAME_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:\d+x|x\d+)(?:[^a-z0-9]|$)"
+    r"|esrgan|ultrasharp|ultramix|siax|nmkd|remacri|lollypop|foolhardy"
+    r"|swinir|hat[-_]|realsr|bsrgan|dat[-_]|span[-_]|omnisr|nomos|ldsr"
+    r"|superscale|super[-_]?resolution|upscal|skindiff|anime6b|lanczos",
+    re.IGNORECASE,
+)
+
+
+def looks_like_upscaler(repo: Dict[str, object], path: str = "") -> bool:
+    tags = {str(tag).lower() for tag in repo.get("tags", [])}
+    if tags & UPSCALER_TAGS:
+        return True
+    repo_id = str(repo.get("id", ""))
+    return bool(UPSCALER_NAME_RE.search(f"{repo_id} {path}"))
 
 SHARD_FILE_RE = re.compile(r"\d{4,5}[-_]of[-_]\d{4,5}", re.IGNORECASE)
 TRAINING_ARTIFACT_RE = re.compile(
@@ -140,6 +169,10 @@ KNOWN_CATEGORY_PARTS = {
     "vae": "vae",
     "vae_approx": "vae_approx",
 }
+
+# A client-supplied category is only ever used as a folder name under models/, so it has
+# to be one we already know about.
+VALID_CATEGORIES = frozenset(KNOWN_CATEGORY_PARTS.values())
 
 TOKEN_CANDIDATE_PATHS = [
     THIS_DIR / ".hf_token",
@@ -369,7 +402,7 @@ def categorize_file(repo: Dict[str, object], path: str) -> str:
         return "controlnet"
     if "lora" in filename or "lora" in lower_path:
         return "loras"
-    if "upscal" in filename or "esrgan" in lower_path:
+    if "upscal" in filename or "esrgan" in lower_path or looks_like_upscaler(repo, path):
         return "upscale_models"
     if "text_encoder" in lower_path or "text projection" in filename.replace("_", " "):
         return "text_encoders"
@@ -410,6 +443,10 @@ def should_keep_repo(repo: Dict[str, object]) -> bool:
     popular = downloads >= MIN_REPO_DOWNLOADS or likes >= MIN_REPO_LIKES
     if not popular:
         return False
+    # Upscaler repos never carry the ComfyUI/diffusers tags, so accept them on
+    # the strength of a super-resolution tag or a recognisable model name.
+    if looks_like_upscaler(repo):
+        return True
     return any(
         flag in tags
         for flag in {"comfyui", "diffusers", "diffusion-single-file", "controlnet", "gguf", "safetensors"}
@@ -1642,6 +1679,19 @@ async def hf_model_downloader_download(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"ok": False, "error": "Invalid JSON body."}, status=400)
 
+    # Live-browse selections arrive as fully formed items, because they are not in the
+    # curated index at all. Indexed selections still arrive as bare ids.
+    live_items = payload.get("items")
+    if isinstance(live_items, list) and live_items:
+        if len(live_items) > 500:
+            return web.json_response({"ok": False, "error": "Too many items selected (max 500)."}, status=400)
+        selected = normalize_live_items(live_items)
+        if not selected:
+            return web.json_response(
+                {"ok": False, "error": "No downloadable files in the submitted items."}, status=400
+            )
+        return _start_download_job(selected, payload)
+
     ids = payload.get("ids", [])
     if not isinstance(ids, list) or not ids:
         return web.json_response({"ok": False, "error": "Request body must include a non-empty ids list."}, status=400)
@@ -1679,6 +1729,56 @@ async def hf_model_downloader_download(request: web.Request) -> web.Response:
     if not selected:
         return web.json_response({"ok": False, "error": "Selected IDs were not found in the current index."}, status=400)
 
+    return _start_download_job(selected, payload)
+
+
+def normalize_live_items(rows: Sequence[object]) -> List[Dict[str, object]]:
+    """Accept browser-supplied file rows, keeping only what the worker needs."""
+    cleaned: List[Dict[str, object]] = []
+    seen: set[Tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        repo_id = str(row.get("repo_id") or "").strip().strip("/")
+        path = str(row.get("path") or "").strip().lstrip("/")
+        if not repo_id or repo_id.count("/") != 1 or not path:
+            continue
+        if ".." in Path(path).parts:
+            continue
+        if Path(path).suffix.lower() not in MODEL_EXTENSIONS:
+            continue
+        key = (repo_id.lower(), path.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        size = row.get("size")
+        try:
+            size = int(size or 0)
+        except (TypeError, ValueError):
+            size = 0
+        category = str(row.get("category") or "checkpoints")
+        if category not in VALID_CATEGORIES:
+            category = "checkpoints"
+        revision = str(row.get("repo_revision") or "main").strip() or "main"
+        cleaned.append(
+            {
+                "id": f"live::{repo_id}::{path}",
+                "repo_id": repo_id,
+                "repo_name": repo_id.split("/")[-1],
+                "repo_revision": revision,
+                "path": path,
+                "filename": Path(path).name,
+                "size": size,
+                "category": category,
+                "family": str(row.get("family") or "MISC"),
+                "title": str(row.get("title") or Path(path).name),
+            }
+        )
+    return cleaned
+
+
+def _start_download_job(selected: Sequence[Dict[str, object]], payload: Dict[str, object]) -> web.Response:
     max_cd = parse_int(
         str(payload.get("max_concurrent_downloads", 8)),
         default=8,
@@ -1692,6 +1792,7 @@ async def hf_model_downloader_download(request: web.Request) -> web.Response:
         max_value=32,
     )
 
+    selected = list(selected)
     _prune_finished_jobs()
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:

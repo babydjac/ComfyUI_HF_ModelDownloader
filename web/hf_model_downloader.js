@@ -10,6 +10,9 @@ const SIDEBAR_TAB_ID = "hf-model-downloader-sidebar-tab";
 const LAUNCH_SHORTCUT = "Ctrl/Cmd+Shift+B";
 const OWNER_SOURCES_STORAGE_KEY = "hfmd.owner_sources";
 const UI_REFRESH_AGE_MS = 5 * 60 * 1000;
+const ASSET_VERSION = "2.0.0";
+const LAYOUT_VERSION = "v7";
+const DENSITY_KEY = "hfmd.density";
 
 function readStoredValue(key) {
     try {
@@ -41,6 +44,18 @@ const state = {
     ownerSourcesInput: readStoredValue(OWNER_SOURCES_STORAGE_KEY),
     strictFilter: true,
     view: "browse",
+    live: {
+        query: "",
+        sort: "trending",
+        pipeline: "any",
+        results: [],
+        activeRepo: null,
+        files: [],
+        selected: new Set(),
+        loading: false,
+        debounce: null,
+    },
+    aria2: { installed: true, checked: false },
     settingsOpen: false,
     detailsItemId: null,
     indexMeta: {
@@ -63,6 +78,8 @@ const state = {
     domObserver: null,
     sidebarTabRegistered: false,
     indexLoadedAtMs: 0,
+    searchDebounce: null,
+    compact: readStoredValue(DENSITY_KEY) === "compact",
 };
 
 function formatBytes(size) {
@@ -142,6 +159,8 @@ function ensureOverlay() {
     const existing = document.getElementById(OVERLAY_ID);
     if (existing) {
         const hasCurrentLayout =
+            existing.dataset.hfmdLayout === LAYOUT_VERSION &&
+            existing.querySelector(".hfmd-live") &&
             existing.querySelector(".hfmd-downloads-panel") &&
             existing.querySelector(".hfmd-family-filter") &&
             existing.querySelector(".hfmd-owner-sources") &&
@@ -159,6 +178,8 @@ function ensureOverlay() {
                 closeButton: existing.querySelector(".hfmd-close"),
                 settingsButton: existing.querySelector(".hfmd-settings-button"),
                 browseButton: existing.querySelector(".hfmd-view-browse"),
+                compactButton: existing.querySelector(".hfmd-density-toggle"),
+                liveButton: existing.querySelector(".hfmd-view-live"),
                 downloadsButton: existing.querySelector(".hfmd-view-downloads"),
                 refreshButton: existing.querySelector(".hfmd-refresh"),
                 toolbar: existing.querySelector(".hfmd-toolbar"),
@@ -178,6 +199,15 @@ function ensureOverlay() {
                 body: existing.querySelector(".hfmd-body"),
                 list: existing.querySelector(".hfmd-list"),
                 details: existing.querySelector(".hfmd-details"),
+                livePanel: existing.querySelector(".hfmd-live"),
+                liveSearch: existing.querySelector(".hfmd-live-search"),
+                liveSort: existing.querySelector(".hfmd-live-sort"),
+                livePipeline: existing.querySelector(".hfmd-live-pipeline"),
+                liveRepos: existing.querySelector(".hfmd-live-repos"),
+                liveFiles: existing.querySelector(".hfmd-live-files"),
+                liveAria2: existing.querySelector(".hfmd-aria2-warn"),
+                liveAria2Text: existing.querySelector(".hfmd-aria2-warn span"),
+                liveAria2Button: existing.querySelector(".hfmd-aria2-warn button"),
                 downloadsPanel: existing.querySelector(".hfmd-downloads-panel"),
                 downloadsList: existing.querySelector(".hfmd-downloads-list"),
                 selectedInfo: existing.querySelector(".hfmd-selected-info"),
@@ -195,6 +225,7 @@ function ensureOverlay() {
             };
             updateOwnerSourcesUi();
             renderTokenMeta();
+            applyCompact();
             return existing;
         }
     }
@@ -208,17 +239,21 @@ function ensureOverlay() {
     const titleWrap = el("div", "hfmd-title-wrap");
     titleWrap.appendChild(el("h2", "hfmd-title", "HF Model Browser"));
     titleWrap.appendChild(
-        el("p", "hfmd-subtitle", "Curated Hugging Face model discovery and install for ComfyUI."),
+        el("p", "hfmd-subtitle", "Curated picks, or search the whole Hub live. Neon build."),
     );
 
     const headerActions = el("div", "hfmd-header-actions");
     const browseButton = el("button", "hfmd-btn hfmd-view-toggle hfmd-view-browse", "Browse");
+    const liveButton = el("button", "hfmd-btn hfmd-view-toggle hfmd-view-live", "Live HF");
     const downloadsButton = el("button", "hfmd-btn hfmd-view-toggle hfmd-view-downloads", "Downloads");
+    const compactButton = el("button", "hfmd-btn hfmd-density-toggle", "Compact");
     const refreshButton = el("button", "hfmd-btn hfmd-refresh", "Refresh Index");
     const settingsButton = el("button", "hfmd-btn hfmd-settings-button", "Settings");
     const closeButton = el("button", "hfmd-btn hfmd-close", "Close");
     headerActions.appendChild(browseButton);
+    headerActions.appendChild(liveButton);
     headerActions.appendChild(downloadsButton);
+    headerActions.appendChild(compactButton);
     headerActions.appendChild(refreshButton);
     headerActions.appendChild(settingsButton);
     headerActions.appendChild(closeButton);
@@ -291,6 +326,80 @@ function ensureOverlay() {
     body.appendChild(list);
     body.appendChild(details);
 
+    const livePanel = el("div", "hfmd-live");
+    livePanel.style.display = "none";
+    const liveBar = el("div", "hfmd-live-bar");
+    const liveSearch = el("input", "hfmd-live-search");
+    liveSearch.placeholder = "Search all of Hugging Face — repo, author, keyword…";
+    liveSearch.spellcheck = false;
+    const liveSort = el("select", "hfmd-select hfmd-live-sort");
+    [
+        ["trending", "Trending"],
+        ["downloads", "Most downloaded"],
+        ["likes", "Most liked"],
+        ["modified", "Recently updated"],
+        ["created", "Newest"],
+    ].forEach(([v, label]) => liveSort.appendChild(option(v, label)));
+    const livePipeline = el("select", "hfmd-select hfmd-live-pipeline");
+    [
+        ["any", "Any task"],
+        ["text-to-image", "Text to image"],
+        ["image-to-image", "Image to image"],
+        ["text-to-video", "Text to video"],
+        ["image-to-video", "Image to video"],
+    ].forEach(([v, label]) => livePipeline.appendChild(option(v, label)));
+    const liveHint = el("div", "hfmd-live-hint", "Live from the Hub. No index, no cache wait.");
+    liveBar.appendChild(liveSearch);
+    liveBar.appendChild(liveSort);
+    liveBar.appendChild(livePipeline);
+    liveBar.appendChild(liveHint);
+
+    const liveChips = el("div", "hfmd-live-chips");
+    // The Hub's search ANDs its terms, so a two-word query like "upscale esrgan"
+    // only matches repos containing both and returns near-empty junk. Keep every
+    // quick search to a single token.
+    const QUICK_SEARCHES = [
+        ["Upscalers", "upscaler"],
+        ["ESRGAN", "esrgan"],
+        ["Krea 2", "krea"],
+        ["ControlNet", "controlnet"],
+        ["LoRAs", "lora"],
+        ["VAE", "vae"],
+        ["Encoders", "encoder"],
+        ["GGUF", "gguf"],
+    ];
+    for (const [label, query] of QUICK_SEARCHES) {
+        const chip = el("button", "hfmd-chip hfmd-chip-button", label);
+        chip.type = "button";
+        chip.addEventListener("click", () => {
+            state.live.query = query;
+            liveSearch.value = query;
+            // Popularity is the only usable quality signal here: ESRGAN repos
+            // report zero downloads, so sort by likes.
+            state.live.sort = "likes";
+            liveSort.value = "likes";
+            runLiveSearch();
+        });
+        liveChips.appendChild(chip);
+    }
+
+    const liveAria2 = el("div", "hfmd-aria2-warn");
+    liveAria2.style.display = "none";
+    const liveAria2Text = el("span", "", "aria2c is missing — downloads cannot run without it.");
+    const liveAria2Button = el("button", "", "Install aria2");
+    liveAria2.appendChild(liveAria2Text);
+    liveAria2.appendChild(liveAria2Button);
+
+    const liveBody = el("div", "hfmd-live-body");
+    const liveRepos = el("div", "hfmd-live-repos");
+    const liveFiles = el("div", "hfmd-live-files");
+    liveBody.appendChild(liveRepos);
+    liveBody.appendChild(liveFiles);
+    livePanel.appendChild(liveBar);
+    livePanel.appendChild(liveChips);
+    livePanel.appendChild(liveAria2);
+    livePanel.appendChild(liveBody);
+
     const downloadsPanel = el("div", "hfmd-downloads-panel");
     downloadsPanel.style.display = "none";
     const downloadsList = el("div", "hfmd-downloads-list");
@@ -344,8 +453,10 @@ function ensureOverlay() {
     modal.appendChild(settingsPanel);
     modal.appendChild(tabs);
     modal.appendChild(body);
+    modal.appendChild(livePanel);
     modal.appendChild(downloadsPanel);
     modal.appendChild(footer);
+    overlay.dataset.hfmdLayout = LAYOUT_VERSION;
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
@@ -368,7 +479,33 @@ function ensureOverlay() {
         event.preventDefault();
         saveTokenFromInput();
     });
+    compactButton.addEventListener("click", () => setCompact(!state.compact));
     browseButton.addEventListener("click", () => setView("browse"));
+    liveButton.addEventListener("click", () => {
+        setView("live");
+        checkAria2();
+        if (!state.live.results.length) runLiveSearch();
+    });
+    liveSearch.addEventListener("input", () => {
+        state.live.query = liveSearch.value;
+        clearTimeout(state.live.debounce);
+        state.live.debounce = setTimeout(() => runLiveSearch(), 320);
+    });
+    liveSearch.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        clearTimeout(state.live.debounce);
+        runLiveSearch();
+    });
+    liveSort.addEventListener("change", () => {
+        state.live.sort = liveSort.value;
+        runLiveSearch();
+    });
+    livePipeline.addEventListener("change", () => {
+        state.live.pipeline = livePipeline.value;
+        runLiveSearch();
+    });
+    liveAria2Button.addEventListener("click", () => installAria2());
     downloadsButton.addEventListener("click", () => {
         setView("downloads");
         fetchJobs();
@@ -376,7 +513,8 @@ function ensureOverlay() {
     refreshButton.addEventListener("click", () => fetchIndex(true));
     searchInput.addEventListener("input", () => {
         state.search = searchInput.value.toLowerCase().trim();
-        renderList();
+        clearTimeout(state.searchDebounce);
+        state.searchDebounce = setTimeout(() => renderList(), 140);
     });
     familyFilter.addEventListener("change", () => {
         state.familyFilter = familyFilter.value || "ALL";
@@ -428,7 +566,10 @@ function ensureOverlay() {
         renderList();
         setStatus("Selection cleared.", "info");
     });
-    downloadButton.addEventListener("click", () => startDownload());
+    downloadButton.addEventListener("click", () => {
+        if (state.view === "live") startLiveDownload();
+        else startDownload();
+    });
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && overlay.style.display !== "none") closeModal();
         if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "b") {
@@ -443,6 +584,8 @@ function ensureOverlay() {
         closeButton,
         settingsButton,
         browseButton,
+        compactButton,
+        liveButton,
         downloadsButton,
         refreshButton,
         toolbar,
@@ -462,6 +605,15 @@ function ensureOverlay() {
         body,
         list,
         details,
+        livePanel,
+        liveSearch,
+        liveSort,
+        livePipeline,
+        liveRepos,
+        liveFiles,
+        liveAria2,
+        liveAria2Text,
+        liveAria2Button,
         downloadsPanel,
         downloadsList,
         selectedInfo,
@@ -634,20 +786,43 @@ function renderBottomProgress(payload) {
     state.ui.progressWrap.style.display = "grid";
 }
 
+function setCompact(on) {
+    state.compact = Boolean(on);
+    writeStoredValue(DENSITY_KEY, state.compact ? "compact" : "");
+    applyCompact();
+}
+
+function applyCompact() {
+    const ui = state.ui;
+    if (!ui?.modal) return;
+    ui.modal.classList.toggle("hfmd-compact", state.compact);
+    if (ui.compactButton) {
+        ui.compactButton.classList.toggle("is-active", state.compact);
+        ui.compactButton.textContent = state.compact ? "Comfortable" : "Compact";
+    }
+}
+
 function setView(view) {
-    state.view = view === "downloads" ? "downloads" : "browse";
+    const known = ["browse", "live", "downloads"];
+    state.view = known.includes(view) ? view : "browse";
     if (!state.ui) return;
     const browse = state.view === "browse";
+    const live = state.view === "live";
+    const downloads = state.view === "downloads";
     state.ui.toolbar.style.display = browse ? "flex" : "none";
     state.ui.tabs.style.display = browse ? "flex" : "none";
     state.ui.body.style.display = browse ? "grid" : "none";
-    state.ui.downloadsPanel.style.display = browse ? "none" : "block";
+    state.ui.livePanel.style.display = live ? "flex" : "none";
+    // flex, not block: the list needs a flex parent to scroll inside.
+    state.ui.downloadsPanel.style.display = downloads ? "flex" : "none";
     state.ui.browseButton.classList.toggle("is-active", browse);
-    state.ui.downloadsButton.classList.toggle("is-active", !browse);
-    if (browse) {
-        if (!state.jobId) stopJobsPolling();
-    } else {
+    state.ui.liveButton.classList.toggle("is-active", live);
+    state.ui.downloadsButton.classList.toggle("is-active", downloads);
+    updateSelectionSummary();
+    if (downloads) {
         startJobsPolling();
+    } else if (!state.jobId) {
+        stopJobsPolling();
     }
 }
 
@@ -832,6 +1007,13 @@ function renderList() {
 }
 
 function updateSelectionSummary() {
+    if (!state.ui?.selectedInfo) return;
+    if (state.view === "live") {
+        const repo = state.live.activeRepo || "no repo";
+        state.ui.selectedInfo.textContent =
+            `Live: ${state.live.selected.size} selected of ${state.live.files.length} files · ${repo}`;
+        return;
+    }
     const total = state.items.length;
     const selected = state.selectedIds.size;
     const visibleItems = currentVisibleItems();
@@ -1111,9 +1293,25 @@ function stopJobsPolling() {
     }
 }
 
+function hasLiveJobs() {
+    return (state.jobs || []).some((job) =>
+        ["queued", "running", "downloading", "starting"].includes(String(job.status || "")),
+    );
+}
+
 function startJobsPolling() {
     if (state.jobsPollTimer) return;
-    state.jobsPollTimer = setInterval(fetchJobs, 1500);
+    state.jobsPollTimer = setInterval(() => {
+        // Idle polling every 1.5s kept the UI busy for no reason. Once nothing is
+        // running, back off to an occasional refresh.
+        if (hasLiveJobs() || state.jobId) {
+            fetchJobs();
+            state.jobsIdleTicks = 0;
+            return;
+        }
+        state.jobsIdleTicks = (state.jobsIdleTicks || 0) + 1;
+        if (state.jobsIdleTicks % 8 === 0) fetchJobs();
+    }, 1500);
     fetchJobs();
 }
 
@@ -1177,6 +1375,9 @@ function openModal() {
     ensureStyles();
     ensureOverlay();
     state.ui.overlay.style.display = "flex";
+    // Covers a freshly built overlay as well as a rehydrated one.
+    applyCompact();
+    setView(state.view);
     if (!state.items.length) {
         fetchIndex(false);
     } else {
@@ -1295,11 +1496,27 @@ function ensureSidebarTab() {
 
 function ensureDomObserver() {
     if (state.domObserver) return;
-    state.domObserver = new MutationObserver(() => {
-        ensureSidebarButton();
-        ensureFloatingButton();
-    });
-    state.domObserver.observe(document.body, { childList: true, subtree: true });
+    // Observing document.body with subtree:true fires on every canvas repaint and
+    // visibly lags the graph. The launch buttons only ever need re-adding when the
+    // sidebar itself is rebuilt, so watch that host and fall back to a slow poll.
+    const host = findSidebarHost();
+    if (host) {
+        state.domObserver = new MutationObserver(() => {
+            ensureSidebarButton();
+            ensureFloatingButton();
+        });
+        state.domObserver.observe(host, { childList: true });
+        return;
+    }
+    state.domObserver = {
+        timer: setInterval(() => {
+            ensureSidebarButton();
+            ensureFloatingButton();
+        }, 4000),
+        disconnect() {
+            clearInterval(this.timer);
+        },
+    };
 }
 
 app.registerExtension({
@@ -1318,7 +1535,266 @@ app.registerExtension({
         ensureSidebarButton();
         ensureSidebarTab();
         ensureDomObserver();
+        checkAria2();
         window.openHFModelDownloader = openModal;
         console.log(`[${EXTENSION_NAME}] popup ready. Shortcut: ${LAUNCH_SHORTCUT}`);
     },
 });
+
+/* ============================================================
+   Live Hugging Face browser
+   ============================================================ */
+
+function liveSelectedFiles() {
+    return state.live.files.filter((file) => state.live.selected.has(file.id));
+}
+
+async function checkAria2() {
+    try {
+        const res = await api.fetchApi("/hf-model-downloader/aria2");
+        const data = await res.json();
+        state.aria2 = { installed: Boolean(data.installed), checked: true, version: data.version || "" };
+    } catch (_) {
+        state.aria2 = { installed: true, checked: false };
+    }
+    renderAria2Warning();
+}
+
+function renderAria2Warning() {
+    const ui = state.ui;
+    if (!ui?.liveAria2) return;
+    const missing = state.aria2.checked && !state.aria2.installed;
+    ui.liveAria2.style.display = missing ? "flex" : "none";
+    if (missing) {
+        ui.liveAria2Text.textContent = "aria2c is missing — downloads cannot start without it.";
+        ui.liveAria2Button.disabled = false;
+        ui.liveAria2Button.textContent = "Install aria2";
+    }
+}
+
+async function installAria2() {
+    const ui = state.ui;
+    if (!ui?.liveAria2Button) return;
+    ui.liveAria2Button.disabled = true;
+    ui.liveAria2Button.textContent = "Installing…";
+    ui.liveAria2Text.textContent = "Running apt-get install aria2. This takes a moment.";
+    try {
+        const res = await api.fetchApi("/hf-model-downloader/aria2", { method: "POST" });
+        const data = await res.json();
+        if (data.ok) {
+            state.aria2 = { installed: true, checked: true, version: data.version || "" };
+            setStatus(`aria2 ready${data.version ? ` — ${data.version}` : ""}.`, "success");
+            renderAria2Warning();
+            return;
+        }
+        ui.liveAria2Text.textContent = `Install failed: ${data.error || "unknown error"}`;
+        ui.liveAria2Button.disabled = false;
+        ui.liveAria2Button.textContent = "Retry";
+    } catch (error) {
+        ui.liveAria2Text.textContent = `Install failed: ${error.message || error}`;
+        ui.liveAria2Button.disabled = false;
+        ui.liveAria2Button.textContent = "Retry";
+    }
+}
+
+async function runLiveSearch() {
+    const ui = state.ui;
+    if (!ui?.liveRepos) return;
+    state.live.loading = true;
+    ui.liveRepos.replaceChildren(el("div", "hfmd-live-empty", "Searching the Hub…"));
+
+    const params = new URLSearchParams({
+        q: state.live.query || "",
+        sort: state.live.sort,
+        pipeline: state.live.pipeline,
+        limit: "40",
+    });
+    try {
+        const res = await api.fetchApi(`/hf-model-downloader/search?${params}`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "search failed");
+        state.live.results = data.results || [];
+    } catch (error) {
+        state.live.results = [];
+        ui.liveRepos.replaceChildren(
+            el("div", "hfmd-live-empty", `Search failed: ${error.message || error}`),
+        );
+        state.live.loading = false;
+        return;
+    }
+    state.live.loading = false;
+    renderLiveRepos();
+}
+
+function renderLiveRepos() {
+    const ui = state.ui;
+    if (!ui?.liveRepos) return;
+    const rows = state.live.results;
+    if (!rows.length) {
+        ui.liveRepos.replaceChildren(
+            el("div", "hfmd-live-empty", "Nothing matched. Try a shorter query."),
+        );
+        return;
+    }
+
+    const frag = document.createDocumentFragment();
+    for (const repo of rows) {
+        const card = el("div", "hfmd-live-repo");
+        if (state.live.activeRepo === repo.repo_id) card.classList.add("is-active");
+        card.appendChild(el("div", "hfmd-live-repo-id", repo.repo_id));
+        const meta = el("div", "hfmd-live-repo-meta");
+        meta.appendChild(el("span", "", `${formatCount(repo.downloads)} dl`));
+        meta.appendChild(el("span", "", `${formatCount(repo.likes)} likes`));
+        if (repo.pipeline) meta.appendChild(el("span", "hfmd-chip is-cyan", repo.pipeline));
+        if (repo.gated) meta.appendChild(el("span", "hfmd-chip is-magenta", "gated"));
+        card.appendChild(meta);
+        card.addEventListener("click", () => openLiveRepo(repo.repo_id));
+        frag.appendChild(card);
+    }
+    ui.liveRepos.replaceChildren(frag);
+}
+
+function formatCount(value) {
+    const n = Number(value || 0);
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+    return String(n);
+}
+
+async function openLiveRepo(repoId) {
+    const ui = state.ui;
+    if (!ui?.liveFiles) return;
+    state.live.activeRepo = repoId;
+    state.live.files = [];
+    state.live.selected.clear();
+    renderLiveRepos();
+    updateSelectionSummary();
+    ui.liveFiles.replaceChildren(el("div", "hfmd-live-empty", `Reading ${repoId}…`));
+
+    try {
+        const res = await api.fetchApi(
+            `/hf-model-downloader/repo?id=${encodeURIComponent(repoId)}`,
+        );
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "could not read repo");
+        state.live.files = data.files || [];
+        renderLiveFiles(data);
+    } catch (error) {
+        ui.liveFiles.replaceChildren(
+            el("div", "hfmd-live-empty", `Failed: ${error.message || error}`),
+        );
+    }
+}
+
+function renderLiveFiles(data) {
+    const ui = state.ui;
+    if (!ui?.liveFiles) return;
+    const files = state.live.files;
+    if (!files.length) {
+        ui.liveFiles.replaceChildren(
+            el(
+                "div",
+                "hfmd-live-empty",
+                "No .safetensors / .ckpt / .gguf files in this repo. It may be diffusers-only or gated.",
+            ),
+        );
+        return;
+    }
+
+    const frag = document.createDocumentFragment();
+    const head = el("div", "hfmd-live-bar");
+    head.appendChild(
+        el(
+            "div",
+            "hfmd-live-hint",
+            `${files.length} files · ${formatBytes(data.total_bytes)} total · ${data.repo.repo_id}`,
+        ),
+    );
+    const selectAll = el("button", "hfmd-btn", "Select all");
+    selectAll.addEventListener("click", () => {
+        const everySelected = files.every((f) => state.live.selected.has(f.id));
+        files.forEach((f) => {
+            if (everySelected) state.live.selected.delete(f.id);
+            else state.live.selected.add(f.id);
+        });
+        renderLiveFiles(data);
+        updateSelectionSummary();
+    });
+    head.appendChild(selectAll);
+    const openHub = el("button", "hfmd-btn", "Open on HF");
+    openHub.addEventListener("click", () => window.open(data.readme_url, "_blank", "noopener"));
+    head.appendChild(openHub);
+    frag.appendChild(head);
+
+    for (const file of files) {
+        const row = el("div", "hfmd-live-file");
+        if (file.installed) row.classList.add("is-installed");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = state.live.selected.has(file.id);
+        box.addEventListener("change", () => {
+            if (box.checked) state.live.selected.add(file.id);
+            else state.live.selected.delete(file.id);
+            updateSelectionSummary();
+        });
+        row.appendChild(box);
+
+        const main = el("div", "hfmd-live-file-main");
+        main.appendChild(el("div", "hfmd-live-file-name", file.path));
+        const sub = el("div", "hfmd-live-file-sub");
+        sub.appendChild(el("span", "", formatBytes(file.size)));
+        sub.appendChild(el("span", "hfmd-chip is-cyan", file.category));
+        if (file.family && file.family !== "MISC") {
+            sub.appendChild(el("span", "hfmd-chip", file.family));
+        }
+        if (file.shard) sub.appendChild(el("span", "hfmd-chip is-magenta", "shard"));
+        if (file.installed) sub.appendChild(el("span", "hfmd-chip is-green", "installed"));
+        main.appendChild(sub);
+        row.appendChild(main);
+        frag.appendChild(row);
+    }
+    ui.liveFiles.replaceChildren(frag);
+}
+
+async function startLiveDownload() {
+    const files = liveSelectedFiles();
+    if (!files.length) {
+        setStatus("Select at least one file first.", "error");
+        return;
+    }
+    if (state.aria2.checked && !state.aria2.installed) {
+        setStatus("aria2c is missing. Install it first.", "error");
+        return;
+    }
+
+    setStatus(`Queueing ${files.length} file(s) from ${state.live.activeRepo}…`, "info");
+    try {
+        const res = await api.fetchApi("/hf-model-downloader/download", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                items: files.map((f) => ({
+                    repo_id: f.repo_id,
+                    repo_revision: f.repo_revision,
+                    path: f.path,
+                    size: f.size,
+                    category: f.category,
+                    family: f.family,
+                    title: f.title,
+                })),
+            }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "download failed");
+        state.jobId = data.job_id;
+        state.live.selected.clear();
+        updateSelectionSummary();
+        setStatus(`Queued ${data.total} file(s).`, "success");
+        setView("downloads");
+        startPolling();
+        startJobsPolling();
+        fetchJobs();
+    } catch (error) {
+        setStatus(`Download failed: ${error.message || error}`, "error");
+    }
+}

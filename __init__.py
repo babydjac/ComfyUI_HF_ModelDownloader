@@ -1,4 +1,5 @@
 from . import server  # noqa: F401
+from . import live_browse  # noqa: F401
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
